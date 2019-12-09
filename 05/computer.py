@@ -1,21 +1,6 @@
 from collections.abc import Iterator
 from functools import partial
-from typing import Callable, Tuple, List
-
-
-class InstructionSet(object):
-    __instance = None
-
-    def __new__(cls):
-        if cls.__instance is None:
-            cls.__instance = super(InstructionSet, cls).__new__(cls)
-        return cls.__instance
-
-    def __setattr__(cls, name, value):
-        raise AttributeError("Attributes for this class are immutable")
-
-    def __delattr__(cls, name, value):
-        raise AttributeError("Attributes for this class are immutable")
+from typing import Callable, Tuple
 
 
 class IntcodeComputer(Iterator):
@@ -25,6 +10,10 @@ class IntcodeComputer(Iterator):
         '02': (3, 'mult'),
         '03': (1, 'input_'),
         '04': (1, 'output'),
+        '05': (2, 'jnz'),
+        '06': (2, 'jz'),
+        '07': (3, 'lt'),
+        '08': (3, 'eq'),
         '99': (0, 'halt'),
     }
 
@@ -35,23 +24,25 @@ class IntcodeComputer(Iterator):
         return self
 
     def __next__(self):
-        if not self.__pc < len(self.__program):
-            self.__halt()
+        if self.__pc > len(self.__program):
+            print(f'pc out of range! {self.__pc}')
+            self.halt()
 
         encoded_opc = self.__program[self.__pc]
 
-        param_cnt, inst = self.__instr.instruction(encoded_opc)
+        param_cnt, inst = self.instruction(encoded_opc)
 
         if param_cnt == 0:
-            inst(self.__program)
+            inst()
             return
 
         params = self.__program[self.__pc+1:self.__pc+1+param_cnt]
-        inst(*params, self.__program)
+        inst(*params)
 
-        self.__pc += (param_cnt + 1)
-
-        return
+    @staticmethod
+    def parse_opcode(opc: int) -> (int, int, int, str):
+        A, B, C, *DE = f'{opc:05d}'
+        return tuple(map(int, (C, B, A))) + (''.join(DE),)
 
     def instruction(self, instruction: int) -> (int, Callable[..., None]):
         decoded_instruction = self.parse_opcode(instruction)
@@ -61,7 +52,7 @@ class IntcodeComputer(Iterator):
             return (
                 instruction_proto[0],
                 partial(
-                    getattr(InstructionSet, instruction_proto[1]),
+                    getattr(self, instruction_proto[1]),
                     decoded_instruction[:3]
                 )
             )
@@ -70,8 +61,8 @@ class IntcodeComputer(Iterator):
             return (
                 instruction_proto[0],
                 partial(
-                    getattr(InstructionSet, instruction_proto[1]),
-                    decoded_instruction[1:3]
+                    getattr(self, instruction_proto[1]),
+                    decoded_instruction[:2]
                 )
             )
 
@@ -79,40 +70,88 @@ class IntcodeComputer(Iterator):
             return (
                 instruction_proto[0],
                 partial(
-                    getattr(InstructionSet, instruction_proto[1]),
-                    decoded_instruction[2]
+                    getattr(self, instruction_proto[1]),
+                    decoded_instruction[0]
                 )
             )
 
-        return (0, getattr(InstructionSet, instruction_proto[1]))
+        return (0, getattr(self, instruction_proto[1]))
 
-    @staticmethod
-    def add(
-        modes: Tuple[int, int, int],
-        opr1: int, opr2: int, opr3: int, memory: List[int]
-    ) -> None:
+    def add(self, modes: Tuple[int, int, int],
+            opr1: int, opr2: int, opr3: int) -> None:
         opr1_mode, opr2_mode, opr3_mode = modes
 
-        val1 = InstructionSet.get_param_value(opr1_mode, opr1, memory)
-        val2 = InstructionSet.get_param_value(opr2_mode, opr2, memory)
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
 
-        memory[opr3] = val1 + val2
+        self.__program[opr3] = val1 + val2
+        self.__pc += 4
 
-    @staticmethod
-    def mult(
-        modes: Tuple[int, int, int],
-        opr1: int, opr2: int, opr3: int, memory: List[int]
-    ) -> None:
+    def mult(self, modes: Tuple[int, int, int],
+             opr1: int, opr2: int, opr3: int) -> None:
         opr1_mode, opr2_mode, opr3_mode = modes
 
-        val1 = InstructionSet.get_param_value(opr1_mode, opr1, memory)
-        val2 = InstructionSet.get_param_value(opr2_mode, opr2, memory)
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
 
-        memory[opr3] = val1 * val2
-        return
+        self.__program[opr3] = val1 * val2
+        self.__pc += 4
 
-    @staticmethod
-    def input_(mode: int, opr: int, memory: List[int]) -> None:
+    def jnz(self, modes: Tuple[int, int],
+            opr1: int, opr2: int) -> None:
+        opr1_mode, opr2_mode = modes
+
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
+
+        if val1:
+            self.__pc = val2
+            return
+
+        self.__pc += 3
+
+    def jz(self, modes: Tuple[int, int],
+            opr1: int, opr2: int) -> None:
+        opr1_mode, opr2_mode = modes
+
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
+
+        if not val1:
+            self.__pc = val2
+            return
+
+        self.__pc += 3
+
+    def lt(self, modes: Tuple[int, int, int],
+            opr1: int, opr2: int, opr3: int) -> None:
+        opr1_mode, opr2_mode, opr3_mode = modes
+
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
+
+        if val1 < val2:
+            self.__program[opr3] = 1
+        else:
+            self.__program[opr3] = 0
+
+        self.__pc += 4
+
+    def eq(self, modes: Tuple[int, int, int],
+            opr1: int, opr2: int, opr3: int) -> None:
+        opr1_mode, opr2_mode, opr3_mode = modes
+
+        val1 = self.get_param_value(opr1_mode, opr1)
+        val2 = self.get_param_value(opr2_mode, opr2)
+
+        if val1 == val2:
+            self.__program[opr3] = 1
+        else:
+            self.__program[opr3] = 0
+
+        self.__pc += 4
+
+    def input_(self, mode: int, opr: int) -> None:
 
         while True:
             in_val = input("input: ").rstrip()
@@ -122,33 +161,27 @@ class IntcodeComputer(Iterator):
             in_val = int(in_val)
             break
 
-        memory[opr] = in_val
-        return
+        self.__program[opr] = in_val
+        self.__pc += 2
 
-    @staticmethod
-    def output(mode: int, opr: int, memory) -> None:
-        val = InstructionSet.get_param_value(mode, opr, memory)
+    def output(self, mode: int, opr: int) -> None:
+        val = self.get_param_value(mode, opr)
         print(f'output: {val:d}')
+        self.__pc += 2
 
-    @staticmethod
-    def halt(memory):
-        print(f'final: {memory[0]}')
+    def halt(self):
+        print(f'final: {self.__program[0]}')
         raise StopIteration
 
-    @staticmethod
-    def get_param_value(mode: int, opr: int, memory: List[int]) -> int:
+    def get_param_value(self, mode: int, opr: int) -> int:
         if mode == 0:
-            return memory[opr]
+            return self.__program[opr]
 
         if mode == 1:
             return opr
 
         raise RuntimeError("invalid addressing mode")
 
-    @staticmethod
-    def parse_opcode(opc: int) -> (int, int, int, str):
-        A, B, C, *DE = f'{opc:05d}'
-        return tuple(map(int, (C, B, A))) + (''.join(DE),)
     def get_memory_by_address(self, address: int):
         if not address < len(self.__program):
             raise RuntimeError("invalid memory location!")
